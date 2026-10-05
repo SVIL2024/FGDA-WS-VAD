@@ -375,7 +375,8 @@ class CLIP(nn.Module):
         # take features from the eot embedding (eot_token is the highest number in
         # each sequence); in prompt mode the caller supplies the token ids
         eot = text if vanilla else token
-        x = x[torch.arange(x.shape[0]), eot.argmax(dim=-1)] @ self.text_projection
+        idx = torch.arange(x.shape[0], device=x.device)
+        x = x[idx, eot.argmax(dim=-1).to(x.device)] @ self.text_projection
 
         return x
 

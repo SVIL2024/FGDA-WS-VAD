@@ -13,8 +13,8 @@ in ``shift`` mode the injected update is exactly ``alpha * h(t) * d`` with
 ``h = irfft(gate)``. A frozen flat gate collapses ``h`` to a constant, and an
 empty gate collapses it to zero - so E2 and E4 are the *same* update up to a
 scalar, and both are close to "add a constant along d". E3 differs from E1 only
-in ``d``. Read the table as: E3 the method, E5 the baseline, E1 the
-text-direction ablation, E2/E4 documented-but-weak controls.
+in ``d``. Read the table as: E1 the proposal, E5 the control, E3 the decisive
+control, E2/E4 documented-but-weak controls.
 """
 
 import argparse
@@ -26,11 +26,11 @@ import os
 VARIANTS = {
     # E5: no augmentation. Reference point; everything is judged against it.
     'E5': dict(aug_weight=0.0),
-    # E1: text-direction ablation - frequency-domain gate + CLIP text direction.
-    #     E1 does not beat E3, so the *text* is not what helps.
+    # E1: the proposal - frequency-domain gate + CLIP text direction.
     'E1': dict(aug_weight=1.0, aug_mode='shift', aug_freq_gate=True,
                aug_direction='text', aug_exclude_dc=True),
-    # E3: the method - identical machinery with a fixed random direction.
+    # E3: decisive control - identical machinery, random fixed direction. If E1
+    #     does not beat E3, the *text* is not what helps.
     'E3': dict(aug_weight=1.0, aug_mode='shift', aug_freq_gate=True,
                aug_direction='random', aug_exclude_dc=True),
     # E4: gate frozen flat -> h becomes a constant -> a pure DC offset along d.
@@ -49,16 +49,28 @@ VARIANTS = {
     #     matters vs structureless perturbation of the same magnitude.
     'N1': dict(aug_weight=1.0, aug_mode='noise', aug_freq_gate=False,
                aug_direction='random', aug_exclude_dc=True),
+    # E3a: gate frozen at the designed bump spectrum -> separates "the frequency
+    #      shape matters" from "learning that shape matters".
+    'E3a': dict(aug_weight=1.0, aug_mode='shift', aug_freq_gate=True,
+                aug_direction='random', aug_exclude_dc=True,
+                aug_gate_learnable=False, aug_gate_random=False),
+    # E3b: gate frozen at a fixed RANDOM spectrum of the same scale -> null
+    #      model for the claim that the frequency gate is a real mechanism.
+    'E3b': dict(aug_weight=1.0, aug_mode='shift', aug_freq_gate=True,
+                aug_direction='random', aug_exclude_dc=True,
+                aug_gate_learnable=False, aug_gate_random=True),
 }
 
 VARIANT_HELP = {
     'E5': 'baseline, no augmentation (VadCLIP as published)',
-    'E1': 'frequency gate + CLIP text direction (the ablated variant)',
+    'E1': 'frequency gate + CLIP text direction (the proposal)',
     'E2': 'time-domain text interpolation, no spectral step (degenerate, see docstring)',
-    'E3': 'frequency gate + fixed random direction (the method)',
+    'E3': 'frequency gate + fixed random direction (the control that matters)',
     'E4': 'gate frozen flat -> constant offset along d (degenerate)',
     'B1': 'multiplicative band gain on the anomaly-projection spectrum',
     'N1': 'plain iid-noise control, RMS-matched (no direction, no spectral structure)',
+    'E3a': 'frozen structured gate, random direction (isolates gate adaptivity)',
+    'E3b': 'frozen random spectrum, random direction (null model for the gate)',
 }
 
 
@@ -79,6 +91,8 @@ AUG_DEFAULTS = dict(
     aug_block_len=51,
     aug_gate_bands=3,
     aug_band_gain=1.0,
+    aug_gate_learnable=True,
+    aug_gate_random=False,
 )
 
 _BOOL = lambda s: str(s).lower() in ('1', 'true', 'yes', 'y', 'on')
@@ -118,6 +132,12 @@ def add_augment_arguments(parser):
     g.add_argument('--aug-gate-bands', default=None, type=int,
                    help='number of Gaussian bumps initialising the band gate')
     g.add_argument('--aug-band-gain', default=None, type=float)
+    g.add_argument('--aug-gate-learnable', default=None, type=_BOOL,
+                   help='False freezes the gate at its initial spectrum '
+                        '(E3a/E3b: structure without adaptivity)')
+    g.add_argument('--aug-gate-random', default=None, type=_BOOL,
+                   help='True initialises the gate from fixed random noise instead '
+                        'of Gaussian bumps (E3b null model)')
     return parser
 
 
@@ -279,75 +299,6 @@ def resolve_data_path(path: str) -> str:
         return path
     candidate = os.path.join(repo_root(), path)
     return candidate if os.path.exists(candidate) else path
-
-
-# ---------------------------------------------------------------------------
-# relocatable data / checkpoint roots
-#
-# The list CSVs and the SHT scripts were produced on the machine that built the
-# feature banks, so they store absolute paths (``E:/dataset/...``). A published
-# tree must be re-rootable without editing 55k CSV rows, so every filesystem
-# root is an environment override with the original value as the fallback.
-# Unset = byte-identical behaviour to the machine that produced the lists.
-# ---------------------------------------------------------------------------
-DATA_ROOT_ENV = 'FGDA_DATA_ROOT'
-SHT_ROOT_ENV = 'FGDA_SHT_ROOT'
-SHT_FEAT_ROOT_ENV = 'FGDA_SHT_FEAT_ROOT'
-VADCLIP_CKPT_ENV = 'FGDA_VADCLIP_{source}'
-
-
-def data_root():
-    """Root holding the CLIP feature banks (contains ``XDTrainClipFeatures`` etc.)."""
-    return os.environ.get(DATA_ROOT_ENV)
-
-
-def sht_root():
-    """Root of the raw ShanghaiTech dataset (``training/frames``, ``label/test.csv``)."""
-    return os.environ.get(SHT_ROOT_ENV) or r'E:\dataset\shanghaitech'
-
-
-def sht_feat_root():
-    """Root of the extracted ShanghaiTech CLIP features (``sht_CLIP_rgbtest.csv``, ``gt_sht.npy``)."""
-    env = os.environ.get(SHT_FEAT_ROOT_ENV)
-    if env:
-        return env
-    root = data_root()
-    if root:
-        return os.path.join(root, 'SHTClipFeatures')
-    return r'E:\dataset\SHTClipFeatures'
-
-
-def resolve_feature_path(path: str) -> str:
-    """Re-root a stored feature path under ``FGDA_DATA_ROOT`` when it is set.
-
-    A list row like ``E:/dataset/XDTrainClipFeatures/x.npy`` becomes
-    ``<FGDA_DATA_ROOT>/XDTrainClipFeatures/x.npy``; the tail after the
-    ``dataset`` component identifies the file. Paths that already exist, and any
-    path while the override is unset, pass through unchanged, so nothing moves on
-    the machine that produced the lists.
-    """
-    root = data_root()
-    if not root or os.path.exists(path):
-        return path
-    parts = path.replace('\\', '/').split('/')
-    tail = parts[parts.index('dataset') + 1:] if 'dataset' in parts else [os.path.basename(path)]
-    return os.path.join(root, *tail)
-
-
-def official_checkpoints(source: str):
-    """Candidate paths for the vendored VadCLIP release checkpoint of ``source``.
-
-    Order: ``FGDA_VADCLIP_<SOURCE>``, a repo-local ``checkpoints/model_<source>.pth``,
-    then the two development paths. The first existing file wins.
-    """
-    env = os.environ.get(VADCLIP_CKPT_ENV.format(source=source.upper()))
-    candidates = [env] if env else []
-    candidates += [
-        os.path.join(repo_root(), 'checkpoints', f'model_{source}.pth'),
-        rf'E:\program\VadCLIP-main\data\model_{source}.pth',
-        rf'E:\program\referCode\VadCLIP-main\data\model_{source}.pth',
-    ]
-    return candidates
 
 
 def resolve_paths(args, dataset: str = None):

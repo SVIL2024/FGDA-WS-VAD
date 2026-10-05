@@ -281,7 +281,8 @@ def run_train(model, train_loader, anomaly_loader, test_fn, test_loader, args,
             use_freq_gate=args.aug_freq_gate, alpha_range=(args.aug_alpha_lo, args.aug_alpha_hi),
             band_gain=args.aug_band_gain, gate_bands=args.aug_gate_bands,
             exclude_dc=args.aug_exclude_dc, delta_norm=args.aug_delta_norm,
-            direction_source=args.aug_direction).to(device)
+            direction_source=args.aug_direction,
+            gate_learnable=args.aug_gate_learnable, gate_random=args.aug_gate_random).to(device)
         params = params + list(augmenter.parameters())
         dirs, dinfo = build_class_directions(args.clip_arch, args.dataset, device=device)
         logger(f'direction table {tuple(dirs.shape)} from {args.clip_arch}; '
@@ -289,7 +290,9 @@ def run_train(model, train_loader, anomaly_loader, test_fn, test_loader, args,
                f'{dinfo["class_direction_mutual_cos"]["mean"]:.4f}')
         logger(f'augmenter mode={args.aug_mode} gate={args.aug_freq_gate} '
                f'direction={args.aug_direction} delta_norm={args.aug_delta_norm} '
-               f'exclude_dc={args.aug_exclude_dc}')
+               f'exclude_dc={args.aug_exclude_dc} '
+               f'gate_learnable={args.aug_gate_learnable} '
+               f'gate_random={args.aug_gate_random}')
         if augmenter is not None:
             logger(f'envelope stats at init: {augmenter.envelope_stats()}')
 
@@ -381,9 +384,13 @@ def run_train(model, train_loader, anomaly_loader, test_fn, test_loader, args,
                 g = augmenter.freq_gate.grad
                 gate_grad = float(g.norm()) if g is not None else 0.0
                 if gate_grad == 0.0:
-                    logger(f'[{tag}] WARNING: freq_gate received zero gradient on '
-                           f'step 1 - the augmentation is detached from the gate, '
-                           f'so E1 is running as E4')
+                    if augmenter.freq_gate.requires_grad:
+                        logger(f'[{tag}] WARNING: freq_gate received zero '
+                               f'gradient on step 1 - the augmentation is '
+                               f'detached from the gate, so E1 is running as E4')
+                    else:
+                        logger(f'[{tag}] gate frozen by design for this '
+                               f'variant - zero gate gradient is expected')
             clip_grad_value_(params, 10)
             optimizer.step()
             # The warmup scheduler counts global iterations, so it must be stepped
@@ -443,18 +450,18 @@ def run_train(model, train_loader, anomaly_loader, test_fn, test_loader, args,
             best, best_epoch = metric, e + 1
             if metric > threshold:
                 # Self-describing name: the whole experiment is recoverable from the
-                # filename, and the AUC is the winning head's own AUC.
-                fname = (f'{args.dataset.upper()}_auc{float(auc_for_name):.4f}_'
-                         f'ap{float(metric):.4f}_e{e+1}_{config_keyvals(args)}.pth')
+                # filename. Field order follows the selection metric, since ``metric``
+                # is the AP for XD/union but the AUC for UCF.
+                paired = float(auc_for_name)
+                named = ({'AUC': float(metric), 'AP': paired}
+                         if metric_name == 'AUC'
+                         else {'AP': float(metric), 'AUC': paired})
+                fname = (f'{args.dataset.upper()}_auc{named["AUC"]:.4f}_'
+                         f'ap{named["AP"]:.4f}_e{e+1}_{config_keyvals(args)}.pth')
                 new_path = os.path.join(args.log_dir, fname)
                 if best_path and os.path.exists(best_path):
                     os.remove(best_path)      # never keep more than one best per run
-                state_dict = model.state_dict()
-                torch.save(state_dict, new_path)
-                # Stable alias for the documented workflow: freq_text_test's
-                # default model_path and the README examples resolve to
-                # runs/<run>/model_best.pth, not to the self-describing name.
-                torch.save(state_dict, args.model_path)
+                torch.save(model.state_dict(), new_path)
                 best_path = new_path
                 with open(os.path.join(args.log_dir, 'latest_best.txt'), 'w') as f:
                     f.write(fname + '\n')

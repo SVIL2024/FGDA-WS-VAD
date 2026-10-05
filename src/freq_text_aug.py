@@ -159,6 +159,29 @@ def _structured_gate_init(n_fft: int, n_bins: int, bands: int, seed: int) -> tor
 DC_AMPLITUDE = 0.35
 
 
+def _random_gate_init(n_fft: int, n_bins: int, seed: int) -> torch.Tensor:
+    """Null model for the designed band gate: a fixed, *unstructured* spectrum.
+
+    Same post-processing as :func:`_structured_gate_init` -- DC zeroed, non-DC
+    bins mean-removed, max-abs normalised -- so the injected field has the same
+    scale and the same ``exclude_dc`` handling. The only difference is that the
+    spectrum itself is i.i.d. Gaussian noise from a fixed seed instead of a sum
+    of Gaussian bumps, i.e. the *shape* information is destroyed while the
+    magnitude statistics are preserved.
+
+    This is the control that answers "is the learned frequency shape doing any
+    work, or would a random gate of the same scale do the same job?". Paired
+    with a *frozen structured* gate it separates the two things the learnable
+    gate could be contributing: its frequency shape, and its adaptivity.
+    """
+    gen = torch.Generator().manual_seed(seed + 611953)
+    prof = torch.randn(n_bins, generator=gen)
+    prof = prof - prof[1:].mean()
+    prof[0] = 0.0
+    scale = prof.abs().max() + 1e-8
+    return prof / scale
+
+
 class FreqTextAugmenter(nn.Module):
     """Frequency-domain text-guided pseudo-anomaly synthesiser.
 
@@ -198,6 +221,15 @@ class FreqTextAugmenter(nn.Module):
             reproduces the document's zero-pad-to-T behaviour for diagnostics.
         direction_source: ``'text'`` uses the caller's CLIP direction;
             ``'random'`` substitutes a fixed unit Gaussian vector (E3).
+        gate_learnable: when False the spectral gate keeps its initial spectrum
+            and is excluded from gradient updates (E3a: structure present but
+            not adapted; E3b: structure destroyed and not adapted). The gate
+            still appears in ``parameters()``; AdamW leaves ``.grad is None``
+            parameters untouched, so no call site has to special-case it.
+        gate_random: when True the gate is initialised from a fixed i.i.d.
+            Gaussian spectrum instead of the designed Gaussian bumps (E3b).
+            Same scale and same DC handling, so the only difference vs a
+            structured gate is the shape information itself.
     """
 
     def __init__(self, dim: int = 512, block_len: int = 51, mode: str = 'shift',
@@ -205,7 +237,8 @@ class FreqTextAugmenter(nn.Module):
                  band_gain: float = 1.0, gate_init: float = None,
                  gate_bands: int = 3, exclude_dc: bool = True,
                  delta_norm: str = 'relative', n_fft: int = None,
-                 direction_source: str = 'text', seed: int = 234):
+                 direction_source: str = 'text', seed: int = 234,
+                 gate_learnable: bool = True, gate_random: bool = False):
         super().__init__()
         if mode not in ('shift', 'band', 'timedomain', 'noise'):
             raise ValueError(f"unknown mode '{mode}', expected 'shift', 'band', "
@@ -224,6 +257,8 @@ class FreqTextAugmenter(nn.Module):
         self.exclude_dc = exclude_dc
         self.delta_norm = delta_norm
         self.direction_source = direction_source
+        self.gate_learnable = bool(gate_learnable)
+        self.gate_random = bool(gate_random)
         self.n_fft = int(block_len if n_fft is None else n_fft)
         if gate_init is None:
             # deviation multiplier applied to the structured profile. 1.0 == the
@@ -238,7 +273,8 @@ class FreqTextAugmenter(nn.Module):
             # Without this the gate is a constant and the envelope is a spike at
             # frame 0, which the bottom-20% selection never touches - the
             # augmentation becomes the identity while every shape still checks out.
-            base = _structured_gate_init(self.n_fft, n_bins, gate_bands, seed) * gate_init
+            base = (_random_gate_init(self.n_fft, n_bins, seed) if self.gate_random
+                    else _structured_gate_init(self.n_fft, n_bins, gate_bands, seed)) * gate_init
             if mode == 'shift':
                 target = (0.5 + DC_AMPLITUDE * base).clamp(1e-3, 1 - 1e-3)
                 pre = torch.log(target / (1 - target))                 # logit
@@ -246,7 +282,7 @@ class FreqTextAugmenter(nn.Module):
                 target = (DC_AMPLITUDE * base).clamp(-1 + 1e-3, 1 - 1e-3)
                 pre = 0.5 * torch.log((1 + target) / (1 - target))     # atanh
             pre[0] = 0.0      # DC stays at the identity; exclude_dc zeroes it anyway
-            self.freq_gate = nn.Parameter(pre)
+            self.freq_gate = nn.Parameter(pre, requires_grad=self.gate_learnable)
         else:
             neutral = 2.0 if mode == 'shift' else 0.0
             self.register_buffer('freq_gate', torch.ones(n_bins) * neutral)

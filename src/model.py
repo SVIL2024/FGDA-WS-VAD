@@ -217,7 +217,7 @@ class CLIPVAD(nn.Module):
 
         # 构建文本嵌入：将单词嵌入按照特定位置规则插入到预定义的嵌入模板中
         for i in range(len(text)):
-            ind = torch.argmax(word_tokens[i], -1)
+            ind = int(torch.argmax(word_tokens[i], -1))
             text_embeddings[i, 0] = word_embedding[i, 0]
             text_embeddings[i, self.prompt_prefix + 1: self.prompt_prefix + ind] = word_embedding[i, 1: ind]
             text_embeddings[i, self.prompt_prefix + ind + self.prompt_postfix] = word_embedding[i, ind]
