@@ -34,9 +34,8 @@ from PIL import Image
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import clip  # noqa: E402  (the vendored src/clip package - same import the repo uses;
 #              do NOT put src/clip itself on sys.path, that breaks its relative imports)
-import freq_text_options  # noqa: E402
 
-SHT_TEST_FRAMES = os.path.join(freq_text_options.sht_root(), 'testing', 'frames')
+SHT_TEST_FRAMES = r'E:\dataset\shanghaitech\testing\frames'
 
 
 def vadclip_center_crop(img_bgr):

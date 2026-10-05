@@ -328,3 +328,54 @@ def resolve_paths(args, dataset: str = None):
     os.makedirs(args.log_dir, exist_ok=True)
     os.makedirs(os.path.dirname(args.model_path) or '.', exist_ok=True)
     return args
+
+
+# Development-machine locations of the released VadCLIP checkpoints, kept only
+# as the last fallback -- see official_checkpoints() for the resolution order.
+_DEV_OFFICIAL_CHECKPOINTS = {
+    'xd': [r'E:\program\VadCLIP-main\data\model_xd.pth',
+           r'E:\program\referCode\VadCLIP-main\data\model_xd.pth'],
+    'ucf': [r'E:\program\VadCLIP-main\data\model_ucf.pth',
+            r'E:\program\referCode\VadCLIP-main\data\model_ucf.pth'],
+}
+
+
+def env_path(*names: str):
+    """First non-empty environment variable among ``names``, else ``None``."""
+    for name in names:
+        value = os.environ.get(name)
+        if value:
+            return value
+    return None
+
+
+def data_root() -> str:
+    """Directory holding the CLIP feature banks (``XDTrainClipFeatures`` etc.)."""
+    return env_path('RSI_DATA_ROOT', 'FGDA_DATA_ROOT') or 'E:/dataset'
+
+
+def sht_root() -> str:
+    """Directory holding the raw ShanghaiTech frames."""
+    return (env_path('RSI_SHT_ROOT', 'FGDA_SHT_ROOT')
+            or r'E:\dataset\shanghaitech')
+
+
+def sht_feat_root() -> str:
+    """Directory holding the extracted ShanghaiTech CLIP features."""
+    return (env_path('RSI_SHT_FEAT_ROOT', 'FGDA_SHT_FEAT_ROOT')
+            or os.path.join(data_root(), 'SHTClipFeatures'))
+
+
+def official_checkpoints(source: str):
+    """Ordered candidate paths for the released VadCLIP ``source`` checkpoint.
+
+    ``RSI_VADCLIP_<SOURCE>`` -> ``FGDA_VADCLIP_<SOURCE>`` (the pre-rename name,
+    still honoured) -> repo-local ``checkpoints/model_<source>.pth`` -> the
+    development-machine paths in ``_DEV_OFFICIAL_CHECKPOINTS``.
+    """
+    override = env_path(f'RSI_VADCLIP_{source.upper()}',
+                        f'FGDA_VADCLIP_{source.upper()}')
+    if override:
+        return [override]
+    return [os.path.join(repo_root(), 'checkpoints',
+                         f'model_{source}.pth')] + _DEV_OFFICIAL_CHECKPOINTS[source]

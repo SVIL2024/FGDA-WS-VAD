@@ -27,10 +27,14 @@ import re
 import shutil
 import sys
 
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'src'))
+import freq_text_options  # noqa: E402
+
 LABEL_IN_NAME = re.compile(r'_label_(.+?)__\d+\.npy$')
 
 # dataset -> the local directory that holds its feature .npy files
-DEFAULT_ROOTS = [os.environ.get('FGDA_DATA_ROOT') or 'E:/dataset']
+DEFAULT_ROOTS = [freq_text_options.data_root()]
 
 
 def _read(path):

@@ -120,6 +120,7 @@ class _CenteredDataset:
         return feat - self.mean, label, length, cls, binary
 
 
+SHT_FEAT_ROOT = freq_text_options.sht_feat_root()
 # SHT carries no typed anomaly classes; the text-aligned head scores against a
 # binary prompt pair (index 0 = normal, consumed as 1 - p(normal))
 SHT_PROMPTS = {
@@ -131,34 +132,33 @@ SHT_PROMPTS = {
 
 def gt_path_for(target):
     if target == 'sht':
-        return os.path.join(freq_text_options.sht_feat_root(), 'gt_sht.npy')
+        return os.path.join(SHT_FEAT_ROOT, 'gt_sht.npy')
     return os.path.join(freq_text_options.repo_root(), 'list',
                         'gt.npy' if target == 'xd' else 'gt_ucf.npy')
 
 
 def test_list_for(target):
     if target == 'sht':
-        return os.path.join(freq_text_options.sht_feat_root(), 'sht_CLIP_rgbtest.csv')
+        return os.path.join(SHT_FEAT_ROOT, 'sht_CLIP_rgbtest.csv')
     return os.path.join(freq_text_options.repo_root(), 'list',
                         f'{target}_CLIP_rgbtest.csv')
 
 
 def resolve_checkpoint(source, checkpoint):
-    """``official`` -> first existing vendored VadCLIP release checkpoint; else a path.
+    """``official`` -> first existing VadCLIP release checkpoint; else a path.
 
-    Candidates come from ``freq_text_options.official_checkpoints``:
-    ``FGDA_VADCLIP_<SOURCE>``, a repo-local ``checkpoints/model_<source>.pth``,
-    then the development-machine paths.
+    Resolution order is documented in freq_text_options.official_checkpoints().
     """
     if checkpoint in ('official', None):
         candidates = freq_text_options.official_checkpoints(source)
         for path in candidates:
-            if path and os.path.exists(path):
+            if os.path.exists(path):
                 return path
         raise FileNotFoundError(
-            f'no official VadCLIP checkpoint for {source}; set '
-            f'FGDA_VADCLIP_{source.upper()} to the downloaded model_{source}.pth '
-            f'or pass --checkpoint <path>. Looked in: {candidates}')
+            f'no official checkpoint for {source}; set '
+            f'RSI_VADCLIP_{source.upper()} (or FGDA_VADCLIP_{source.upper()}) '
+            f'to the downloaded model_{source}.pth, or pass '
+            f'--checkpoint <path>. Looked in: {candidates}')
     if not os.path.exists(checkpoint):
         raise FileNotFoundError(f'checkpoint not found: {checkpoint}')
     return checkpoint

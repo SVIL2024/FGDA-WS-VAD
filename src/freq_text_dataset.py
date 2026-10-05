@@ -56,7 +56,7 @@ class ClipVideoDataset(data.Dataset):
                 parts = line.rstrip('\n').split(',')
                 if len(parts) < 2:
                     continue
-                self.paths.append(freq_text_options.resolve_feature_path(parts[0]))
+                self.paths.append(parts[0])
                 self.labels.append(parts[1])
         if normal is not None and not test_mode:
             # normal=True -> keep normals, normal=False -> keep anomalies
